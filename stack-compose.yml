@@ -1,0 +1,103 @@
+version: "3.8"
+
+services:
+  # ===============================
+  # MySQL Database
+  # ===============================
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: beanview
+      MYSQL_USER: huncho
+      MYSQL_PASSWORD: C11h28no3
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # ===============================
+  # API Service (FastAPI / Django)
+  # ===============================
+  api:
+    image: michaelmurwayi/api:latest
+    environment:
+      DB_HOST: db
+      DB_NAME: beanview
+      DB_USER: huncho
+      DB_PASS: C11h28no3
+      DB_PORT: 3306
+    depends_on:
+      - db
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  # ===============================
+  # React Frontend (Main Website)
+  # ===============================
+  react:
+    image: michaelmurwayi/cebba:latest
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  # ===============================
+  # Vite Dashboard
+  # ===============================
+  vite:
+    image: michaelmurwayi/dashboard:latest
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  # ===============================
+  # NGINX Reverse Proxy
+  # ===============================
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+      - react
+      - vite
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/nginx.conf
+    volumes:
+      - ./nginx/certs:/nginx/certs:ro
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+# ===============================
+# Network and Config Definitions
+# ===============================
+networks:
+  cebba_net:
+    driver: overlay
+
+volumes:
+  db_data:
+
+configs:
+  nginx_conf:
+    file: ./nginx.conf
