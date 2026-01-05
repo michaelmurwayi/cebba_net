@@ -65,6 +65,24 @@ services:
         condition: on-failure
 
   # ===============================
+  # Portainer (Docker UI)
+  # ===============================
+  portainer:
+    image: portainer/portainer-ce:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  # ===============================
   # NGINX Reverse Proxy
   # ===============================
   nginx:
@@ -76,6 +94,7 @@ services:
       - api
       - react
       - vite
+      - portainer
     configs:
       - source: nginx_conf
         target: /etc/nginx/nginx.conf
@@ -89,7 +108,7 @@ services:
         condition: on-failure
 
 # ===============================
-# Network and Config Definitions
+# Network, Volumes & Configs
 # ===============================
 networks:
   cebba_net:
@@ -97,6 +116,7 @@ networks:
 
 volumes:
   db_data:
+  portainer_data:
 
 configs:
   nginx_conf:
