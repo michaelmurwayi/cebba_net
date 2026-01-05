@@ -36,7 +36,7 @@ services:
     networks:
       - cebba_net
     deploy:
-      replicas: 2
+      replicas: 1
       restart_policy:
         condition: on-failure
 
@@ -48,7 +48,7 @@ services:
     networks:
       - cebba_net
     deploy:
-      replicas: 2
+      replicas: 1
       restart_policy:
         condition: on-failure
 
@@ -60,7 +60,7 @@ services:
     networks:
       - cebba_net
     deploy:
-      replicas: 2
+      replicas: 1
       restart_policy:
         condition: on-failure
 
