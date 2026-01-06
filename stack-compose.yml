@@ -106,7 +106,20 @@ services:
       replicas: 1
       restart_policy:
         condition: on-failure
-
+  # ==============================
+  #  Cerbot for SSL Certificates
+  # ===============================
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./nginx/certs:/etc/letsencrypt
+      - ./nginx/certbot:/var/www/certbot
+    networks:
+      - cebba_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
 # ===============================
 # Network, Volumes & Configs
 # ===============================
