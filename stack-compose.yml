@@ -99,7 +99,9 @@ services:
       - source: nginx_conf
         target: /etc/nginx/nginx.conf
     volumes:
-      - ./nginx/certs:/nginx/certs:ro
+      - ./nginx/certs:/etc/letsencrypt:ro
+      - ./nginx/certbot:/var/www/certbot
+      
     networks:
       - cebba_net
     deploy:
