@@ -1,8 +1,31 @@
 version: "3.9"
 
+# ============================================================
+# CEBBA stack — public website + Orion Nexus (API / Postgres / Dashboard)
+#
+# Deploy:
+#   export POSTGRES_PASSWORD=... SECRET_KEY=...   # required, no safe default
+#   docker stack deploy -c stack-compose.yml cebba
+#
+# Network layout
+#   CEBBA : external overlay Traefik is attached to. Edge-facing only.
+#   ORION : private overlay. orion-postgres is attached to THIS network only,
+#           so it is never reachable from the proxy or from the host.
+#
+# NOTE on images: VITE_API_URL is compiled into the dashboard bundle at BUILD
+# time (see ~/Code/nexus/Dockerfile). It must equal the public API origin, or
+# the dashboard will call the wrong host from the browser:
+#   docker build --build-arg VITE_API_URL=https://api.orion.cebba.ke \
+#     -t orion-dashboard:latest .
+# ============================================================
+
 services:
+
+  # ============================================================
+  # CEBBA public website
+  # ============================================================
   cebba-web:
-    image: michaelmurwayi/cebba-website:v1.1
+    image: michaelmurwayi/cebba-website:${IMAGE_TAG:-v1.1}
 
     networks:
       - CEBBA
@@ -35,7 +58,14 @@ services:
 
         reservations:
           cpus: "0.10"
-          memory: 128M
+          memory:  28M
+
+      # Bound log growth — without this json-file logs grow until the disk fills.
+      logging:
+        driver: json-file
+        options:
+          max-size: "10m"
+          max-file: "3"
 
       labels:
         - "traefik.enable=true"
@@ -49,13 +79,248 @@ services:
         - "traefik.http.routers.cebba-secure.entrypoints=websecure"
         - "traefik.http.routers.cebba-secure.tls.certresolver=letsencrypt"
 
-        # Redirect HTTP → HTTPS
-        - "traefik.http.middlewares.redirect.redirectscheme.scheme=https"
-        - "traefik.http.routers.cebba.middlewares=redirect"
+        # Redirect HTTP -> HTTPS. Middleware is namespaced per service:
+        # reusing one `redirect` name across services makes the labels
+        # overwrite each other, so one service silently loses its redirect.
+        - "traefik.http.middlewares.cebba-redirect.redirectscheme.scheme=https"
+        - "traefik.http.routers.cebba.middlewares=cebba-redirect"
 
         # Service Port
         - "traefik.http.services.cebba.loadbalancer.server.port=80"
 
+  # ============================================================
+  # Orion Nexus — PostgreSQL
+  #
+  # No published ports and no CEBBA membership, so it is reachable only
+  # from orion-api across the ORION overlay.
+  # ============================================================
+  orion-postgres:
+    image: ${ORION_POSTGRES_IMAGE:-postgres:16-alpine}
+
+    networks:
+      - ORION
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-orion}
+
+    volumes:
+      - orion-pg-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orion} -d ${POSTGRES_DB:-orion}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+    # Let Postgres finish a clean shutdown during node drains.
+    stop_grace_period: 1m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  # ============================================================
+  # Orion Nexus — FastAPI API (main:app, uvicorn :8000)
+  #
+  # The image entrypoint blocks until Postgres accepts a connection,
+  # so no depends_on is needed (Swarm ignores depends_on anyway).
+  # ============================================================
+  orion-api:
+    image: ${ORION_API_IMAGE:-orion:latest}
+
+    networks:
+      - CEBBA
+      - ORION
+
+    environment:
+      ENV: ${ENV:-production}
+      DEBUG: ${DEBUG:-False}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # "orion-postgres" is the Swarm DNS alias for the DB service.
+      # Keep the password URL-safe (A-Za-z0-9-._~) — it is not encoded here.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-orion}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@orion-postgres:5432/${POSTGRES_DB:-orion}
+      # core/config.py declares TEST_DATABASE_URL with no default, so the
+      # process refuses to boot without it even though only tests use it.
+      TEST_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-orion}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@orion-postgres:5432/${POSTGRES_TEST_DB:-orion_test}
+
+      # LEFT EMPTY ON PURPOSE: core/cache.py hardcodes
+      # redis.Redis(host="localhost") and farmer_service.py calls it without
+      # a guard, so every /farmers request raises ConnectionError until that
+      # file is fixed. See README_ORION.md.
+      REDIS_HOST: ""
+      REDIS_PORT: ""
+
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+
+      # Must be valid JSON — pydantic-settings parses list[str] as JSON.
+      # List the DASHBOARD origin here, not the API origin.
+      CORS_ORIGINS: '${CORS_ORIGINS:-["https://orion.cebba.ke"]}'
+
+    volumes:
+      - orion-media-stock:/app/media/stock_summary
+      - orion-media-payouts:/app/media/payouts
+
+    # Same check the image declares, kept here so the interval is tunable.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    stop_grace_period: 30s
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 0
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+      labels:
+        - "traefik.enable=true"
+
+        # HTTP
+        - "traefik.http.routers.orion-api.rule=Host(`${ORION_API_HOST:-api.orion.cebba.ke}`)"
+        - "traefik.http.routers.orion-api.entrypoints=web"
+
+        # HTTPS
+        - "traefik.http.routers.orion-api-secure.rule=Host(`${ORION_API_HOST:-api.orion.cebba.ke}`)"
+        - "traefik.http.routers.orion-api-secure.entrypoints=websecure"
+        - "traefik.http.routers.orion-api-secure.tls.certresolver=letsencrypt"
+
+        - "traefik.http.middlewares.orion-api-redirect.redirectscheme.scheme=https"
+        - "traefik.http.routers.orion-api.middlewares=orion-api-redirect"
+
+        # Service Port
+        - "traefik.http.services.orion-api.loadbalancer.server.port=${ORION_API_PORT:-8000}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  # ============================================================
+  # Orion Nexus — Dashboard (Vite SPA, nginx-unprivileged :8080)
+  #
+  # NOTE: this image bakes VITE_API_URL into the JS bundle at build time,
+  # so a wrong value cannot be corrected with a runtime env var — rebuild.
+  # ============================================================
+  orion-dashboard:
+    image: ${ORION_DASHBOARD_IMAGE:-orion-dashboard:latest}
+
+    networks:
+      - CEBBA
+      - ORION
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    stop_grace_period: 10s
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+      labels:
+        - "traefik.enable=true"
+
+        # HTTP
+        - "traefik.http.routers.orion-dashboard.rule=Host(`${ORION_DASHBOARD_HOST:-orion.cebba.ke}`)"
+        - "traefik.http.routers.orion-dashboard.entrypoints=web"
+
+        # HTTPS
+        - "traefik.http.routers.orion-dashboard-secure.rule=Host(`${ORION_DASHBOARD_HOST:-orion.cebba.ke}`)"
+        - "traefik.http.routers.orion-dashboard-secure.entrypoints=websecure"
+        - "traefik.http.routers.orion-dashboard-secure.tls.certresolver=letsencrypt"
+
+        - "traefik.http.middlewares.orion-dashboard-redirect.redirectscheme.scheme=https"
+        - "traefik.http.routers.orion-dashboard.middlewares=orion-dashboard-redirect"
+
+        # Service Port — nginx-unprivileged listens on 8080 by default.
+        - "traefik.http.services.orion-dashboard.loadbalancer.server.port=${ORION_DASHBOARD_PORT:-8080}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   CEBBA:
     external: true
+
+  ORION:
+    driver: overlay
+    attachable: true
+
+volumes:
+  orion-pg-data:
+  orion-media-stock:
+  orion-media-payouts:
