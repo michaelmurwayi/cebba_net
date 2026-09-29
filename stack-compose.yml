@@ -60,13 +60,6 @@ services:
           cpus: "0.10"
           memory:  28M
 
-      # Bound log growth — without this json-file logs grow until the disk fills.
-      logging:
-        driver: json-file
-        options:
-          max-size: "10m"
-          max-file: "3"
-
       labels:
         - "traefik.enable=true"
 
@@ -138,11 +131,6 @@ services:
     # Let Postgres finish a clean shutdown during node drains.
     stop_grace_period: 1m
 
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 
   # ============================================================
@@ -239,12 +227,6 @@ services:
         # Service Port
         - "traefik.http.services.orion-api.loadbalancer.server.port=${ORION_API_PORT:-8000}"
 
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
 
   # ============================================================
   # Orion Nexus — Dashboard (Vite SPA, nginx-unprivileged :8080)
@@ -305,12 +287,6 @@ services:
 
         # Service Port — nginx-unprivileged listens on 8080 by default.
         - "traefik.http.services.orion-dashboard.loadbalancer.server.port=${ORION_DASHBOARD_PORT:-8080}"
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 networks:
   CEBBA:
