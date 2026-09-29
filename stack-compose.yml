@@ -140,7 +140,7 @@ services:
   # so no depends_on is needed (Swarm ignores depends_on anyway).
   # ============================================================
   orion-api:
-    image: ${ORION_API_IMAGE:-orion:latest}
+    image: ${ORION_API_IMAGE:-michaelmurwayi/orion-api:tagname}
 
     networks:
       - CEBBA
