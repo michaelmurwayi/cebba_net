@@ -235,7 +235,7 @@ services:
   # so a wrong value cannot be corrected with a runtime env var — rebuild.
   # ============================================================
   orion-dashboard:
-    image: ${ORION_DASHBOARD_IMAGE:-orion-dashboard:latest}
+    image: ${ORION_DASHBOARD_IMAGE:-michaelmurwayi/orion-dashboard:latest}
 
     networks:
       - CEBBA
